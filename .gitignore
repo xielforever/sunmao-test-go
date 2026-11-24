@@ -1,0 +1,11 @@
+# Binaries
+app
+go-app
+bin/
+dist/
+*.exe
+
+# Env & local
+.env
+.env.*
+*.log

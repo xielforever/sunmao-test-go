@@ -1,0 +1,81 @@
+name: sunmao-test-go
+description: Go 后端发布测试流水线（支持服务器 SSH、容器与 Kubernetes 部署）
+params:
+  - name: IMAGE
+    type: string
+    required: true
+    description: 目标容器镜像，例如 swr.cn-east-2.myhuaweicloud.com/dx_x2era/sunmao-test-go:v1
+  - name: DEPLOY_TARGET
+    type: choice
+    options: [all, server, container, k8s]
+    default: all
+    description: 部署目标
+  - name: SERVER
+    type: string
+    default: ""
+    description: SSH 部署目标主机（DEPLOY_TARGET 为 server 或 all 时填写）
+  - name: SKIP_IMAGE_BUILD
+    type: bool
+    default: "false"
+steps:
+  - type: print
+    name: start
+    message: "sunmao-test-go target=${DEPLOY_TARGET} image=${IMAGE}"
+  - type: git_clone
+    name: clone
+    url: https://github.com/xielforever/sunmao-test-go.git
+    workspace: true
+  - type: shell
+    name: test-and-build
+    image: golang:1.22-alpine
+    workspace: true
+    script: |
+      go test -v ./...
+      CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o go-app .
+  - type: if
+    name: image-build-gate
+    condition: '${SKIP_IMAGE_BUILD} != "true"'
+    then_steps:
+      - type: kaniko_build
+        name: build-image
+        dockerfile: Dockerfile
+        context: .
+        destination: ${IMAGE}
+        credential: registry
+        workspace: true
+    else_steps:
+      - type: print
+        name: image-build-skipped
+        message: "skipping image build"
+  - type: ssh_deploy
+    name: deploy-server
+    when: '${DEPLOY_TARGET} == "server" or ${DEPLOY_TARGET} == "all"'
+    credential: deploy-ssh
+    user: deploy
+    hosts: ["${SERVER}"]
+    workspace: true
+    artifact:
+      src: go-app
+      dest: /opt/sunmao-test-go/go-app
+    hooks:
+      deploy: "chmod +x /opt/sunmao-test-go/go-app"
+  - type: container_deploy
+    name: deploy-container
+    when: '${DEPLOY_TARGET} == "container" or ${DEPLOY_TARGET} == "all"'
+    image: ${IMAGE}
+    container_name: sunmao-test-go
+  - type: deploy
+    name: deploy-k8s
+    when: '${DEPLOY_TARGET} == "k8s" or ${DEPLOY_TARGET} == "all"'
+    namespace: sunmao-samples
+    deployment: sunmao-test-go
+    image_overrides:
+      - container: app
+        image: ${IMAGE}
+  - type: health_check
+    name: verify-k8s
+    when: '${DEPLOY_TARGET} == "k8s" or ${DEPLOY_TARGET} == "all"'
+    namespace: sunmao-samples
+    deployment: sunmao-test-go
+    http_url: http://sunmao-test-go.sunmao-samples.svc:8080/healthz
+    timeout_secs: 180
